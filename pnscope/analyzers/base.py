@@ -34,7 +34,15 @@ class SpectrumAnalyzer(ABC):
     RMS (power-average) detector, and the trace as an array."""
 
     model_name = "generic"
-    needs_host = False  # True: constructor takes a host name/IP
+    needs_host = False  # True: constructor takes an address (host name/IP, serial port, ...)
+    address_label = "Address"
+    default_address = ""
+    # noise bandwidth of the RBW filter relative to the RBW setting (Gaussian: 1.065)
+    enbw_factor = 1.065
+
+    def enbw_ratio(self, rbw: float) -> float:
+        """Noise bandwidth / RBW for this RBW setting (override if it depends on the RBW)."""
+        return self.enbw_factor
     rbw_steps: list[float] = steps_125(1, 1e6)
     min_freq = 0.0
     max_freq = 1e12

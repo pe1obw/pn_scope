@@ -24,6 +24,7 @@ class PNCurve:
     usb: np.ndarray
     lsb: np.ndarray
     rbw: np.ndarray
+    enbw: np.ndarray  # noise bandwidth / RBW per point
 
     @property
     def avg(self):
@@ -33,11 +34,14 @@ class PNCurve:
         return {"Average": self.avg, "Upper": self.usb, "Lower": self.lsb}[which]
 
 
-def stitch(m: Measurement, enbw=ENBW_GAUSSIAN) -> PNCurve:
-    fs, us, ls, rs = [], [], [], []
+def stitch(m: Measurement, enbw=None) -> PNCurve:
+    """enbw: noise bandwidth / RBW. Default: per segment as stored by the driver,
+    else Gaussian."""
+    fs, us, ls, rs, es = [], [], [], [], []
     for seg in m.segments:
         off, p = seg.offsets, seg.power
-        L = p - m.carrier_power - 10 * np.log10(enbw * seg.rbw)
+        e = enbw or seg.enbw or ENBW_GAUSSIAN
+        L = p - m.carrier_power - 10 * np.log10(e * seg.rbw)
         # half-open: the outermost bin of a trace is often unreliable
         sel = (off >= seg.f_lo) & (off < seg.f_hi)
         fu = off[sel]
@@ -45,10 +49,11 @@ def stitch(m: Measurement, enbw=ENBW_GAUSSIAN) -> PNCurve:
         us.append(L[sel])
         ls.append(np.interp(-fu, off, L))
         rs.append(np.full(fu.shape, seg.rbw))
+        es.append(np.full(fu.shape, e))
     if not fs:
-        e = np.array([])
-        return PNCurve(e, e, e, e)
-    return PNCurve(*(np.concatenate(x) for x in (fs, us, ls, rs)))
+        z = np.array([])
+        return PNCurve(z, z, z, z, z)
+    return PNCurve(*(np.concatenate(x) for x in (fs, us, ls, rs, es)))
 
 
 # --- spurs ---------------------------------------------------------------------
@@ -69,6 +74,7 @@ def _running_median(y, half):
 
 
 def find_spurs(f, L, rbw, threshold_db=10.0, half_window=15, enbw=ENBW_GAUSSIAN):
+    """enbw: scalar or per-point array (noise bandwidth / RBW)."""
     """Points more than threshold above a running median. Returns (spurs, mask, baseline);
     mask covers each spur plus one neighbouring bin either side."""
     if len(f) == 0:
@@ -86,7 +92,8 @@ def find_spurs(f, L, rbw, threshold_db=10.0, half_window=15, enbw=ENBW_GAUSSIAN)
         while j + 1 < len(L) and hot[j + 1]:
             j += 1
         k = i + int(np.argmax(L[i:j + 1]))
-        spurs.append(Spur(float(f[k]), float(L[k] + 10 * np.log10(enbw * rbw[k])),
+        e = enbw[k] if np.ndim(enbw) else enbw
+        spurs.append(Spur(float(f[k]), float(L[k] + 10 * np.log10(e * rbw[k])),
                           float(L[k] - base[k])))
         mask[max(i - 1, 0):j + 2] = True
         i = j + 1
@@ -201,12 +208,12 @@ class Processed:
 def process(curve: PNCurve, opt: ProcessOptions, floor: PNCurve | None = None) -> Processed:
     f = curve.f
     raw = curve.sideband(opt.sideband)
-    spurs, mask, base = find_spurs(f, raw, curve.rbw, opt.spur_threshold)
+    spurs, mask, base = find_spurs(f, raw, curve.rbw, opt.spur_threshold, enbw=curve.enbw)
     pre = np.where(mask, base, raw) if opt.remove_spurs else raw.copy()
     if opt.subtract_floor and floor is not None and len(floor.f):
         fl = floor.sideband(opt.sideband)
         if opt.remove_spurs:
-            _, fm, fb = find_spurs(floor.f, fl, floor.rbw, opt.spur_threshold)
+            _, fm, fb = find_spurs(floor.f, fl, floor.rbw, opt.spur_threshold, enbw=floor.enbw)
             fl = np.where(fm, fb, fl)
         clean = subtract_floor(f, pre, floor.f, fl, opt.floor_margin)
         # for display, smooth both before subtracting: far fewer noise-induced gaps

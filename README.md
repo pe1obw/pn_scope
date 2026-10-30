@@ -5,7 +5,8 @@ for analyzers that have no phase-noise option.
 
 Supported analyzers:
 
-- Siglent SSA3000X series (tested: SSA3075X-R, firmware 3.2.2.6)
+- Siglent SSA3000X series (tested: SSA3075X-R, firmware 3.2.2.6), over LAN
+- tinySA Ultra (tested: ZS-406, firmware v1.4-109), over USB; see [tinySA notes](#tinysa-notes)
 - A built-in simulated analyzer, to try the program without hardware
 
 Adding another analyzer (e.g. Rigol RSA3000/5000) is a small driver class, see
@@ -17,7 +18,7 @@ Adding another analyzer (e.g. Rigol RSA3000/5000) is a small driver class, see
 
 ```sh
 python3 -m venv venv
-venv/bin/pip install -e .          # numpy, PySide6, pyqtgraph, matplotlib
+venv/bin/pip install -e .          # numpy, PySide6, pyqtgraph, matplotlib, pyserial
 venv/bin/pnscope [files…]          # or: venv/bin/python -m pnscope
 ```
 
@@ -194,7 +195,9 @@ class RigolRSA(ScpiSpectrumAnalyzer):
 
 Then add the module to the import line in `analyzers/__init__.py`. If the trace comes back in
 another format (binary block, different separator) override `parse_trace()`; if the instrument
-needs a different sweep/wait sequence, override `sweep()`. Instruments without SCPI over a
+needs a different sweep/wait sequence, override `sweep()`. If the RBW filters are not Gaussian,
+set `enbw_factor` or override `enbw_ratio(rbw)`; the value is stored with every segment.
+`analyzers/tinysa.py` is an example of a non-SCPI (USB serial shell) driver. Instruments without SCPI over a
 socket (USB-TMC, VISA, serial) can subclass `SpectrumAnalyzer` directly, or replace
 `SocketTransport` with another class offering `open/close/write/readline/query`.
 
@@ -209,6 +212,24 @@ Points to check when bringing up a new analyzer:
   works again; set it to the instrument's go-to-local command, or `None` if there is none.
 - Compare a clean generator against the simulated / known results, and check that
   `restore_state` leaves the instrument as it was (`save_state()` before == after).
+
+## tinySA notes
+
+Select **tinySA Ultra** and leave the serial port at `auto` (or enter `/dev/ttyACM0`, `COM5`, …).
+Sweeps use the `scanraw` command; the screen sweep is paused during the measurement and the
+sweep range and RBW (`auto`) are restored afterwards.
+
+- The minimum RBW is 200 Hz, so use a start offset of about 2 kHz or higher (the segment
+  table warns below that). A 200 Hz segment takes ~25 s per sweep.
+- Its own phase noise is much higher than a bench analyzer's: on a clean 100 MHz generator a
+  ZS-406 shows about −91 dBc/Hz at 10–30 kHz, −106 dBc/Hz at 100–300 kHz and −120 dBc/Hz near
+  1 MHz. Those values are the tinySA's floor; measure a clean source as reference trace.
+- Noise bandwidth per RBW was measured on a ZS-406 (1.22 × RBW at 200 Hz, 1.05–1.14 × at
+  1–30 kHz) and is applied automatically.
+- Detector: each point combines ~5–20 readings. Peak detection is ruled out, but whether they are
+  averaged in power (no error) or in dB (noise reads ~2 dB low) is still open; an absolute
+  check against the Siglent with a common noise-like signal would settle it. Until then treat
+  tinySA noise readings as ±2 dB.
 
 ## Limitations / ideas
 

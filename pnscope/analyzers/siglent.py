@@ -8,6 +8,8 @@ from .scpi import ScpiSpectrumAnalyzer
 class SiglentSSA3000X(ScpiSpectrumAnalyzer):
     model_name = "Siglent SSA3000X"
     needs_host = True
+    address_label = "IP address"
+    default_address = "192.168.10.108"
     rbw_steps = steps_125(1, 1e6)
     min_freq = 9e3
     max_freq = 7.5e9

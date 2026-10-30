@@ -26,6 +26,7 @@ class Segment:
     power: np.ndarray    # dBm, power-averaged
     carrier_freq: float = 0.0  # carrier frequency used as center for this segment
     sweep_time: float = 0.0    # s, one sweep
+    enbw: float | None = None  # noise bandwidth / RBW of the analyzer at this RBW
 
     def to_dict(self):
         d = asdict(self)

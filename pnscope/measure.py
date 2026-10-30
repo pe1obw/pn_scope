@@ -162,7 +162,7 @@ class PhaseNoiseRun:
                     span=sp.span, rbw=sp.rbw, vbw=sp.vbw, averages=sp.averages,
                     f_lo=sp.f_lo, f_hi=sp.f_hi,
                     offsets=-sp.span / 2 + sp.span * np.arange(len(t)) / (len(t) - 1),
-                    power=t, carrier_freq=fc, sweep_time=st))
+                    power=t, carrier_freq=fc, sweep_time=st, enbw=a.enbw_ratio(sp.rbw)))
                 done += weights[k]
                 self.on_segment(m)
             errs = a.errors()
@@ -191,7 +191,11 @@ def find_carrier(analyzer: SpectrumAnalyzer, cancel=None, progress=None) -> tupl
         analyzer.configure(center, span, rbw, 3 * rbw)
         t = run._sweep_avg(1)
         f = run._grid(center, span, len(t))
-        fc, _ = _peak(f, t, exclude_below=max(lo, 2e6, 10 * rbw))
+        fc, level = _peak(f, t, exclude_below=max(lo, 2e6, 10 * rbw))
+        if level - float(np.median(t)) < run.MIN_SNR_DB:
+            raise AnalyzerError(f"No signal found on the analyzer input: the strongest one "
+                                f"({level:.1f} dBm at {fc / 1e6:.3f} MHz) is only "
+                                f"{level - float(np.median(t)):.0f} dB above the noise.")
         return run.locate(fc, run.locate_steps(min(span / 50, 200e6)))
     finally:
         analyzer.restore_state(state)

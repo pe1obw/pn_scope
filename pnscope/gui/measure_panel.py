@@ -62,7 +62,7 @@ class MeasurePanel(QWidget):
         self.driver = QComboBox()
         self.driver.addItems(list(DRIVERS))
         self.driver.setCurrentText(s.value("analyzer/driver", next(iter(DRIVERS))))
-        self.host = QLineEdit(s.value("analyzer/host", "192.168.10.108"))
+        self.host = QLineEdit()
         row = QHBoxLayout()
         row.addWidget(self.host, 1)
         self.test_btn = QPushButton("Test")
@@ -72,7 +72,8 @@ class MeasurePanel(QWidget):
         self.idn.setWordWrap(True)
         self.idn.setStyleSheet("color: #52514e")
         f.addRow("Model", self.driver)
-        f.addRow("Address", row)
+        self.host_label = QLabel("Address")
+        f.addRow(self.host_label, row)
         f.addRow(self.idn)
         lay.addWidget(g)
 
@@ -200,7 +201,19 @@ class MeasurePanel(QWidget):
             w.setVisible(on)
 
     def _driver_changed(self, name):
+        """Each driver remembers its own address (IP for LAN, port for USB serial)."""
         cls = DRIVERS.get(name)
+        prev = getattr(self, "_driver_name", None)
+        if prev and prev != name and self.host.text().strip():
+            QSettings().setValue(f"analyzer/address/{prev}", self.host.text().strip())
+        if prev != name:
+            self._driver_name = name
+            if cls is not None:
+                default = cls.default_address
+                if name == "Siglent SSA3000X":  # address saved by version 0.1
+                    default = QSettings().value("analyzer/host", default)
+                self.host.setText(QSettings().value(f"analyzer/address/{name}", default))
+                self.host_label.setText(cls.address_label)
         self.host.setEnabled(bool(cls and cls.needs_host))
         self.test_btn.setEnabled(True)
 
@@ -255,7 +268,7 @@ class MeasurePanel(QWidget):
     def save_settings(self):
         s = QSettings()
         s.setValue("analyzer/driver", self.driver.currentText())
-        s.setValue("analyzer/host", self.host.text())
+        s.setValue(f"analyzer/address/{self.driver.currentText()}", self.host.text().strip())
         s.setValue("meas/carrier", self.carrier.text())
         for key, w in (("search", self.search), ("start", self.start), ("stop", self.stop)):
             if w.value():
