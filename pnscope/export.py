@@ -69,7 +69,7 @@ def figure(spec: FigureSpec, size=(10, 6)):
     ax.xaxis.set_major_locator(LogLocator(10))
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: format_freq(v, 3)))
     ax.grid(True, which="major", color=style.GRID, lw=0.8)
-    ax.grid(True, which="minor", color=style.GRID, lw=0.4, alpha=0.6)
+    ax.grid(True, which="minor", color=style.GRID, lw=0.5, alpha=0.7)
     for s in ax.spines.values():
         s.set_color(style.GRID)
     ax.tick_params(colors=style.TEXT_2, labelsize=9)
