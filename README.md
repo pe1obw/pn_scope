@@ -19,6 +19,17 @@ venv/bin/pip install -e .          # numpy, PySide6, pyqtgraph, matplotlib
 venv/bin/pnscope [files…]          # or: venv/bin/python -m pnscope
 ```
 
+### Windows executable
+
+`packaging\build_windows.bat` (run from a Windows command prompt with Python 3.10+ installed)
+creates a private build venv, installs PyInstaller and builds `dist\PNScope\PNScope.exe` plus
+`dist\PNScope-<version>-windows.zip`. Unzip anywhere and run `PNScope.exe`; no Python needed.
+The build settings are in `packaging/pnscope.spec` (also works on Linux:
+`pyinstaller packaging/pnscope.spec`).
+
+On GitHub, `.github/workflows/windows.yml` does the same on every push; pushing a tag such as
+`v0.2.0` also attaches the zip to a release. The version comes from `pnscope/__init__.py`.
+
 Run the tests with `venv/bin/pip install pytest && venv/bin/python -m pytest`.
 
 ## Functionality
