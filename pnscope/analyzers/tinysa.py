@@ -119,8 +119,21 @@ class TinySAUltra(SpectrumAnalyzer):
         start, stop, points = self.sh.command("sweep")[0].split()[:3]
         return {"sweep": f"{start} {stop} {points}"}
 
+    def segment_state(self):
+        lines = self.sh.command("attenuate")
+        try:
+            return {"attenuate": int(float(lines[-1]))}
+        except (ValueError, IndexError):
+            return {}
+
+    def apply_segment_state(self, state):
+        if "attenuate" in state:
+            self.sh.command(f"attenuate {state['attenuate']}")
+
     def restore_state(self, state):
-        # the shell only reports the current RBW, not whether it was 'auto'; auto is the default
+        # the shell only reports the current RBW/attenuation, not whether they were 'auto';
+        # auto is the default
+        self.sh.command("attenuate auto")
         self.sh.command("rbw auto")
         self.sh.command(f"sweep {state['sweep']}")
         self.sh.command("resume")
@@ -161,6 +174,8 @@ class TinySAUltra(SpectrumAnalyzer):
         return stop - start
 
     # the tinySA has no reference level that affects the measurement (attenuation is automatic)
+    has_ref_level = False
+
     def get_ref_level(self):
         return 30.0
 

@@ -21,6 +21,7 @@ class TraceView:
     processed: A.Processed
     is_floor: bool = False
     integrated: A.Integrated | None = None
+    is_background: bool = False
 
 
 @dataclass
@@ -52,7 +53,8 @@ def figure(spec: FigureSpec, size=(10, 6)):
         if t.integrated is not None and not t.is_floor:
             label += f" — {t.integrated.phase_deg:.3g}° rms, {format_si(t.integrated.jitter_s, 's', 3)}"
         ax.semilogx(p.f, p.display, color=style.FLOOR if t.is_floor else t.color,
-                    lw=1.0 if t.is_floor else 1.4, ls="--" if t.is_floor else "-", label=label)
+                    lw=1.0 if (t.is_floor or t.is_background) else 1.4,
+                    ls="--" if t.is_floor else ":" if t.is_background else "-", label=label)
     if spec.region:
         ax.axvspan(*spec.region, color=style.SERIES[0], alpha=0.08, lw=0)
     for label, f0 in spec.markers:
@@ -151,11 +153,14 @@ def report(traces: list[TraceView], opt: A.ProcessOptions, region, spots, marker
             vals = [A.value_at(t.processed.f, t.processed.display, f0) for t in traces]
             out.append(f"| {label} | {format_freq(f0)} | "
                        + " | ".join("—" if math.isnan(v) else f"{v:.1f}" for v in vals) + " |")
-    spur_rows = [(t.name, s) for t in traces for s in t.processed.spurs]
+    spur_rows = [(t.name, s) for t in traces if not t.is_background for s in t.processed.spurs]
     if spur_rows:
-        out += ["", "## Spurs", "", "| Trace | Offset | Level | Above noise |", "|---|---|---|---|"]
+        out += ["", "## Spurs", "", "| Trace | Offset | Level | Above noise | Without carrier |",
+                "|---|---|---|---|---|"]
         for name, s in spur_rows:
-            out.append(f"| {name} | {format_freq(s.offset, 5)} | {s.dbc:.1f} dBc | {s.excess_db:.1f} dB |")
+            origin = {True: "yes (external)", False: "no (DUT)", None: "not measured"}[s.background]
+            out.append(f"| {name} | {format_freq(s.offset, 5)} | {s.dbc:.1f} dBc | {s.excess_db:.1f} dB "
+                       f"| {origin} |")
     out += ["", "Method: spectrum-analyzer method, RMS detector, power-averaged sweeps, "
             "L(f) = P − Pc − 10·log10(1.065·RBW). Integration is DSB: φ = √(2∫L(f)df).", ""]
     return "\n".join(out)

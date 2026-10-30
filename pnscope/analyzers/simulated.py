@@ -34,12 +34,16 @@ class SimulatedAnalyzer(SpectrumAnalyzer):
     def __init__(self, carrier_freq=1_000_000_123.4, carrier_power=-8.0, points=751,
                  sweep_delay=0.02, floor_dbm_hz=-155.0, drift_hz_per_s=0.0,
                  spurs=((50.0, -55.0), (7.3e3, -62.0), (370e3, -55.0)), seed=None,
-                 profile=default_profile):
+                 profile=default_profile, interferers=((-1520.0, -70.0), (192e3, -70.0))):
         self.fc0, self.pc = carrier_freq, carrier_power
         self.points, self.delay = points, sweep_delay
         self.floor = floor_dbm_hz
         self.drift = drift_hz_per_s
         self.spurs = list(spurs)  # (offset Hz, dBc), symmetric pair
+        # signals from the surroundings, there also with the DUT off: (offset from the
+        # nominal carrier Hz, dBm), one-sided
+        self.interferers = list(interferers)
+        self.carrier_on = True
         self.profile = profile
         self.rng = np.random.default_rng(seed)
         self.center, self.span, self.rbw, self.vbw = carrier_freq, 7.5e9, 3e6, 3e6
@@ -66,6 +70,9 @@ class SimulatedAnalyzer(SpectrumAnalyzer):
     def setup_noise_mode(self):
         pass
 
+    def set_carrier_expected(self, on):
+        self.carrier_on = on  # the simulated "DUT" is switched off for a background run
+
     def configure(self, center, span, rbw, vbw):
         self.center, self.span, self.rbw, self.vbw = center, span, rbw, vbw
         return self.sweep_time()
@@ -91,7 +98,8 @@ class SimulatedAnalyzer(SpectrumAnalyzer):
         sub = int(min(max(1, np.ceil(2 * bin_w / self.rbw)), 25))
         u = (np.arange(sub) - (sub - 1) / 2) / sub * bin_w
         sigma = self.rbw / 2.3548
-        pc_lin = 10 ** (self.pc / 10)
+        pc_lin = 10 ** (self.pc / 10) if self.carrier_on else 0.0
+        d_nom = f - self.fc0  # interferers sit at fixed frequencies
         p = np.zeros(n)
         for du in u:
             d = df[:, None] + du
@@ -99,6 +107,8 @@ class SimulatedAnalyzer(SpectrumAnalyzer):
             for off, dbc in self.spurs:
                 for sgn in (1, -1):
                     p += pc_lin * 10 ** (dbc / 10) * np.exp(-0.5 * ((d[:, 0] - sgn * off) / sigma) ** 2)
+            for off, dbm in self.interferers:
+                p += 10 ** (dbm / 10) * np.exp(-0.5 * ((d_nom + du - off) / sigma) ** 2)
         p /= sub
         nbw = ENBW * self.rbw
         noise = pc_lin * 10 ** (self.profile(df) / 10) * nbw + 10 ** (self.floor / 10) * nbw

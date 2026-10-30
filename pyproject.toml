@@ -12,6 +12,9 @@ dependencies = ["numpy>=1.24", "PySide6-Essentials>=6.5", "pyqtgraph>=0.13", "ma
 
 [project.optional-dependencies]
 test = ["pytest"]
+# PlutoSDR driver; needs the libiio system library (Linux: package libiio0, Windows: ADI's
+# libiio installer). Use pylibiio 0.25 with libiio 0.2x, pylibiio 1.0 with libiio 1.x.
+pluto = ["pylibiio>=0.25,<1"]
 
 [project.scripts]
 pnscope = "pnscope.gui.app:main"

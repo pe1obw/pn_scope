@@ -27,6 +27,7 @@ class Segment:
     carrier_freq: float = 0.0  # carrier frequency used as center for this segment
     sweep_time: float = 0.0    # s, one sweep
     enbw: float | None = None  # noise bandwidth / RBW of the analyzer at this RBW
+    analyzer_state: dict | None = None  # driver settings in effect (e.g. receiver gain)
 
     def to_dict(self):
         d = asdict(self)

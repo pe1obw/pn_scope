@@ -72,3 +72,26 @@ def test_no_carrier_is_an_error():
     with pytest.raises(AnalyzerError, match="No carrier"):
         run.run()
     assert a.span == 7.5e9
+
+
+def test_background_run_separates_external_spurs():
+    """The simulator has a DUT spur at 7.3 kHz (on both sidebands) and an interferer at
+    -1.52 kHz that stays when the DUT is off. The background run must tell them apart."""
+    from pnscope.measure import background_settings, plan_from
+    a = SimulatedAnalyzer(sweep_delay=0, seed=4)
+    dut = PhaseNoiseRun(a, PlanSettings(start=100, stop=100e3, averages=4),
+                        MeasureSettings(name="dut", carrier_freq=a.fc0)).run()
+    bkg_run = PhaseNoiseRun(a, PlanSettings(), background_settings(dut), plan=plan_from(dut))
+    bkg = bkg_run.run()
+    assert a.carrier_on  # switched back on afterwards
+    assert [s.span for s in bkg.segments] == [s.span for s in dut.segments]
+    assert bkg.carrier_power == dut.carrier_power
+    assert bkg.settings["background_for"]["timestamp"] == dut.timestamp
+    c, cb = A.stitch(dut), A.stitch(bkg)
+    # without the carrier there is no phase noise: the background is far below the DUT curve
+    assert A.spot(cb.f, cb.avg, 3e3) < A.spot(c.f, c.avg, 3e3) - 20
+    p = A.process(c, A.ProcessOptions(sideband="Lower"))
+    A.classify_spurs(p.spurs, c, p.raw, cb, "Lower")
+    by_offset = {round(s.offset / 100) * 100: s.background for s in p.spurs}
+    assert by_offset.get(1500) is True, p.spurs
+    assert by_offset.get(7300) is False, p.spurs

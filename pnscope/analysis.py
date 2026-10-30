@@ -62,6 +62,7 @@ class Spur:
     offset: float      # Hz
     dbc: float         # total spur power relative to carrier
     excess_db: float   # how far it sticks out above the noise
+    background: bool | None = None  # also present with the DUT off? None: not checked
 
 
 def _running_median(y, half):
@@ -98,6 +99,25 @@ def find_spurs(f, L, rbw, threshold_db=10.0, half_window=15, enbw=ENBW_GAUSSIAN)
         mask[max(i - 1, 0):j + 2] = True
         i = j + 1
     return spurs, mask, base
+
+
+def classify_spurs(spurs, curve: "PNCurve", L_dut, background: "PNCurve", sideband: str,
+                   margin_db=6.0):
+    """Mark each spur as present without the carrier (background=True) when the background
+    measurement reaches within margin_db of the spur's level at the same offset (searched
+    over +-2 RBW, as the spur's exact bin can differ between the runs)."""
+    if background is None or len(background.f) == 0:
+        return spurs
+    Lb = background.sideband(sideband)
+    for sp in spurs:
+        k = int(np.argmin(np.abs(curve.f - sp.offset)))
+        tol = 2 * curve.rbw[k]
+        sel = np.abs(background.f - sp.offset) <= tol
+        if not sel.any():
+            sp.background = None
+            continue
+        sp.background = bool(np.nanmax(Lb[sel]) >= L_dut[k] - margin_db)
+    return spurs
 
 
 # --- smoothing -------------------------------------------------------------------

@@ -37,6 +37,7 @@ class SpectrumAnalyzer(ABC):
     needs_host = False  # True: constructor takes an address (host name/IP, serial port, ...)
     address_label = "Address"
     default_address = ""
+    has_ref_level = True  # False: set_ref_level() does nothing (gain/attenuation automatic)
     # noise bandwidth of the RBW filter relative to the RBW setting (Gaussian: 1.065)
     enbw_factor = 1.065
 
@@ -88,6 +89,19 @@ class SpectrumAnalyzer(ABC):
 
     def errors(self) -> list[str]:
         return []
+
+    def segment_state(self) -> dict:
+        """Settings the driver chose itself for the current segment (e.g. gain, attenuation).
+        Stored with the segment; a background run re-applies them, so it measures the
+        analyzer's floor as it was during the measurement."""
+        return {}
+
+    def apply_segment_state(self, state: dict):
+        """Re-apply segment_state() after configure() (background measurements)."""
+
+    def set_carrier_expected(self, on: bool):
+        """False during a background measurement (DUT off). Drivers that rely on the
+        carrier (e.g. to normalise levels) must not do so then."""
 
     def __enter__(self):
         self.connect()

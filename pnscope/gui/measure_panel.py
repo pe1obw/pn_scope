@@ -46,6 +46,8 @@ class FreqEdit(QLineEdit):
 
 class MeasurePanel(QWidget):
     start_requested = Signal()
+    background_requested = Signal()
+    background_enabled = Signal(bool)
     stop_requested = Signal()
     test_requested = Signal()
     find_requested = Signal()
@@ -125,6 +127,10 @@ class MeasurePanel(QWidget):
         row.addWidget(self.autoref)
         row.addWidget(self.ref_margin)
         row.addStretch()
+        self.bkg_enable = QCheckBox("Background measurement (DUT off)")
+        self.bkg_enable.setToolTip("Adds a 'Background' button: repeat a measurement with the DUT's RF "
+                                   "off,\nto see which spurs come from the surroundings or the analyzer.")
+        self.bkg_enable.setChecked(s.value("meas/background", False, type=bool))
         self.restore = QCheckBox("Restore analyzer settings afterwards")
         self.restore.setChecked(s.value("meas/restore", True, type=bool))
         self.span_rbw = QDoubleSpinBox(minimum=50, maximum=5000, value=float(s.value("meas/spanrbw", 600)),
@@ -138,6 +144,7 @@ class MeasurePanel(QWidget):
         f.addRow(self.track)
         f.addRow(row)
         f.addRow(self.restore)
+        f.addRow(self.bkg_enable)
         f.addRow("Span / RBW", self.span_rbw)
         f.addRow("Min. offset", self.min_rbw)
         f.addRow("VBW", self.vbw)
@@ -171,6 +178,15 @@ class MeasurePanel(QWidget):
         row.addWidget(self.start_btn, 1)
         row.addWidget(self.stop_btn)
         lay.addLayout(row)
+        self.bkg_btn = QPushButton("Background (DUT off)…")
+        self.bkg_btn.setToolTip("Repeat the selected measurement with the DUT's RF switched off.\n"
+                                "Spurs that are still there come from the surroundings or the "
+                                "analyzer; the spur table marks them.")
+        self.bkg_btn.clicked.connect(self.background_requested)
+        lay.addWidget(self.bkg_btn)
+        self.bkg_btn.setVisible(self.bkg_enable.isChecked())
+        self.bkg_enable.toggled.connect(self.bkg_btn.setVisible)
+        self.bkg_enable.toggled.connect(self.background_enabled)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
         self.progress.setTextVisible(False)
@@ -260,7 +276,7 @@ class MeasurePanel(QWidget):
     def set_running(self, running):
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
-        for w in (self.find_btn, self.get_btn, self.test_btn, self.driver, self.host):
+        for w in (self.find_btn, self.get_btn, self.test_btn, self.driver, self.host, self.bkg_btn):
             w.setEnabled(not running)
         if not running:
             self._driver_changed(self.driver.currentText())
@@ -279,6 +295,7 @@ class MeasurePanel(QWidget):
         s.setValue("meas/autoref", self.autoref.isChecked())
         s.setValue("meas/refmargin", self.ref_margin.value())
         s.setValue("meas/restore", self.restore.isChecked())
+        s.setValue("meas/background", self.bkg_enable.isChecked())
         s.setValue("meas/spanrbw", self.span_rbw.value())
         s.setValue("meas/minrbw", self.min_rbw.value())
         s.setValue("meas/vbw", self.vbw.value())

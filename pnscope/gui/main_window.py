@@ -20,8 +20,9 @@ from .. import analysis as A
 from .. import export as X
 from .. import style
 from ..analyzers import create
-from ..measure import PhaseNoiseRun, find_carrier
+from ..measure import PhaseNoiseRun, background_settings, find_carrier, plan_from, states_from
 from ..model import FILE_SUFFIX, Measurement, load
+from ..plan import PlanSettings
 from ..units import format_freq, format_si, parse_si
 from .measure_panel import FreqEdit, MeasurePanel
 from .plot import PNPlot
@@ -42,8 +43,19 @@ class Trace:
         self.curve = A.stitch(m)
         self.processed: A.Processed | None = None
         self.integrated: A.Integrated | None = None
+        self.bkg_of: int | None = None  # key of the measurement this is the background of
         Trace._next_key += 1
         self.key = Trace._next_key
+
+    @property
+    def is_background(self):
+        return "background_for" in self.m.settings
+
+    def belongs_to(self, other: "Trace") -> bool:
+        """Is this the background measurement of `other`?"""
+        b = self.m.settings.get("background_for")
+        return bool(b) and b.get("timestamp") == other.m.timestamp and \
+            abs(b.get("carrier_freq", 0) - other.m.carrier_freq) < 1.0
 
     def update_measurement(self, m):
         self.m = m
@@ -112,6 +124,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
         self.mpanel.start_requested.connect(self.start_measurement)
+        self.mpanel.background_requested.connect(self.start_background)
+        self.mpanel.background_enabled.connect(lambda on: (self.bkg_action.setVisible(on),
+                                                           self.update_tables()))
         self.mpanel.stop_requested.connect(self.stop_task)
         self.mpanel.test_requested.connect(self.test_connection)
         self.mpanel.find_requested.connect(self.find_carrier)
@@ -290,8 +305,11 @@ class MainWindow(QMainWindow):
         self.marker_table.cellDoubleClicked.connect(self._marker_table_clicked)
         self.tabs.addTab(self.marker_table, "Markers")
 
-        self.spur_table = table(["Trace", "Offset", "Level [dBc]", "Above noise [dB]"])
-        self.spur_table.setToolTip("Double-click to put a marker on the spur")
+        self.spur_table = table(["Trace", "Offset", "Level [dBc]", "Above noise [dB]",
+                                 "Without carrier"])
+        self.spur_table.setToolTip("Double-click to put a marker on the spur.\n'Without carrier': "
+                                   "also present in the background measurement (DUT off), so it "
+                                   "comes from the surroundings or the analyzer, not from the DUT.")
         self.spur_table.cellDoubleClicked.connect(self._spur_clicked)
         self.tabs.addTab(self.spur_table, "Spurs")
 
@@ -344,6 +362,8 @@ class MainWindow(QMainWindow):
         act(m, "&Start", self.start_measurement, "F5")
         act(m, "S&top", self.stop_task, "Esc")
         act(m, "&Find carrier", self.find_carrier)
+        self.bkg_action = act(m, "&Background (DUT off) for selected trace", self.start_background)
+        self.bkg_action.setVisible(self.mpanel.bkg_enable.isChecked())
 
         m = mb.addMenu("&View")
         act(m, "&Auto-scale", lambda: self.plot.getPlotItem().enableAutoRange(), "Ctrl+0")
@@ -365,9 +385,24 @@ class MainWindow(QMainWindow):
     def add_trace(self, m: Measurement) -> Trace:
         t = Trace(m, self._next_color())
         self.traces.append(t)
+        self._link_backgrounds()
         self.rebuild_trace_table()
         self.schedule_refresh()
         return t
+
+    def _link_backgrounds(self):
+        """A background trace takes the colour of the measurement it belongs to."""
+        for b in self.traces:
+            if not b.is_background:
+                continue
+            b.bkg_of = None
+            for t in self.traces:
+                if t is not b and not t.is_background and b.belongs_to(t):
+                    b.bkg_of, b.color = t.key, t.color
+                    break
+
+    def background_of(self, t: Trace) -> Trace | None:
+        return next((b for b in self.traces if b.bkg_of == t.key), None)
 
     def selected_trace(self) -> Trace | None:
         rows = self.trace_table.selectionModel().selectedRows()
@@ -431,6 +466,7 @@ class MainWindow(QMainWindow):
         self.traces.remove(t)
         if self.floor_key == t.key:
             self.floor_key = None
+        self._link_backgrounds()
         self.rebuild_trace_table()
         self.schedule_refresh()
 
@@ -465,15 +501,20 @@ class MainWindow(QMainWindow):
                 t.processed = None
                 continue
             is_floor = t is floor
-            o = dataclasses.replace(opt, subtract_floor=opt.subtract_floor and not is_floor)
-            t.processed = A.process(t.curve, o, floor.curve if (floor and not is_floor) else None)
+            plain = is_floor or t.is_background  # no floor subtraction for these
+            o = dataclasses.replace(opt, subtract_floor=opt.subtract_floor and not plain)
+            t.processed = A.process(t.curve, o, floor.curve if (floor and not plain) else None)
             t.integrated = (A.integrate(t.processed.f, t.processed.clean, *rng, t.m.carrier_freq)
-                            if rng else None)
+                            if rng and not t.is_background else None)
+            bkg = self.background_of(t)
+            if bkg is not None and len(bkg.curve.f):
+                A.classify_spurs(t.processed.spurs, t.curve, t.processed.raw, bkg.curve, opt.sideband)
             if t.visible:
+                kind = "floor" if is_floor else "background" if t.is_background else "normal"
                 legend = t.m.name + (" (reference)" if is_floor else "")
                 if t.integrated and not is_floor:
                     legend += f" — {t.integrated.phase_deg:.3g}° rms"
-                series.append((t.key, t.m.name, t.color, t.processed, is_floor, legend))
+                series.append((t.key, t.m.name, t.color, t.processed, kind, legend))
         self.plot.set_traces(series, self.show_raw.isChecked())
         if rng:
             self.plot.set_region(*rng, visible=self.int_show.isChecked())
@@ -548,6 +589,8 @@ class MainWindow(QMainWindow):
         tb = self.spur_table
         tb.setRowCount(0)
         for t in vis:
+            if t.is_background:
+                continue
             for sp in t.processed.spurs:
                 row = tb.rowCount()
                 tb.insertRow(row)
@@ -556,7 +599,11 @@ class MainWindow(QMainWindow):
                 tb.item(row, 1).setData(Qt.UserRole, sp.offset)
                 tb.setItem(row, 2, cell(f"{sp.dbc:.1f}"))
                 tb.setItem(row, 3, cell(f"{sp.excess_db:.1f}"))
+                origin = {True: "yes — external", False: "no — from DUT", None: "—"}[sp.background]
+                tb.setItem(row, 4, cell(origin, False, color="#a8551c" if sp.background else None))
         self.tabs.setTabText(3, f"Spurs ({tb.rowCount()})")
+        tb.setColumnHidden(4, not (self.mpanel.bkg_enable.isChecked()
+                                   or any(t.is_background for t in self.traces)))
         self.update_marker_table()
         self.update_info()
 
@@ -736,6 +783,39 @@ class MainWindow(QMainWindow):
         self._run_task(fn, self._measurement_done, f"Measuring '{ms.name}'…")
         self.task.partial.connect(self._measurement_partial)
 
+    def start_background(self):
+        """Repeat the selected measurement with the DUT's RF off."""
+        if self.task is not None:
+            return
+        t = self.selected_trace()
+        if t is None or t.is_background or t.live or not t.m.segments:
+            QMessageBox.information(self, "Background", "Select the measurement the background "
+                                    "belongs to (a completed trace) first.")
+            return
+        r = QMessageBox.question(
+            self, "Background measurement",
+            f"Switch the RF of the DUT off now (leave all cables connected).\n\n"
+            f"PNScope repeats the segments of '{t.m.name}' at {format_freq(t.m.carrier_freq, 10)} "
+            f"with the {self.mpanel.driver.currentText()}, without carrier.\nSpurs that are also "
+            f"there come from the surroundings or the analyzer, not from the DUT.",
+            QMessageBox.Ok | QMessageBox.Cancel)
+        if r != QMessageBox.Ok:
+            return
+        ms = background_settings(t.m, restore=self.mpanel.restore.isChecked())
+        plan, states = plan_from(t.m), states_from(t.m)
+
+        def fn(progress, partial, cancel):
+            with self._analyzer() as a:
+                run = PhaseNoiseRun(a, PlanSettings(), ms, progress=progress, cancel=cancel, plan=plan,
+                                    segment_states=states,
+                                    on_segment=lambda m: partial(
+                                        dataclasses.replace(m, segments=list(m.segments))))
+                return run.run()
+
+        self.live_trace = None
+        self._run_task(fn, self._measurement_done, f"Measuring background for '{t.m.name}'…")
+        self.task.partial.connect(self._measurement_partial)
+
     def _measurement_partial(self, m):
         if self.live_trace is None:
             self.live_trace = self.add_trace(m)
@@ -752,11 +832,16 @@ class MainWindow(QMainWindow):
         self.live_trace.live = False
         self.live_trace.dirty = True
         self.live_trace = None
-        self.mpanel.status.setText(f"Done: carrier {format_freq(m.carrier_freq, 10)}, "
-                                   f"{m.carrier_power:.2f} dBm")
+        if "background_for" in m.settings:
+            self.mpanel.status.setText("Background done — switch the DUT on again. The spur "
+                                       "table shows which spurs are also there without carrier.")
+            self.tabs.setCurrentWidget(self.spur_table)
+        else:
+            self.mpanel.status.setText(f"Done: carrier {format_freq(m.carrier_freq, 10)}, "
+                                       f"{m.carrier_power:.2f} dBm")
+            self.mpanel.name.clear()
         for e in m.settings.get("analyzer_errors", []):
             self.logmsg("Analyzer error queue: " + e)
-        self.mpanel.name.clear()
         self.rebuild_trace_table()
         self.schedule_refresh()
 
@@ -833,7 +918,8 @@ class MainWindow(QMainWindow):
         vis = self.visible_traces()
         floor = self.floor_trace()
         views = [X.TraceView(t.m.name, t.color, t.m, t.processed, t is floor,
-                             t.integrated if self.int_show.isChecked() else None) for t in vis]
+                             t.integrated if self.int_show.isChecked() else None,
+                             t.is_background) for t in vis]
         (x0, x1), (y0, y1) = self.plot.viewRange()
         rng = self.int_range() if self.int_show.isChecked() else None
         opt = self.options()
@@ -882,7 +968,8 @@ class MainWindow(QMainWindow):
         if not path.endswith(".md"):
             path += ".md"
         floor = self.floor_trace()
-        views = [X.TraceView(t.m.name, t.color, t.m, t.processed, t is floor, t.integrated) for t in vis]
+        views = [X.TraceView(t.m.name, t.color, t.m, t.processed, t is floor, t.integrated,
+                             t.is_background) for t in vis]
         text = X.report(views, self.options(), self.int_range(), self._spots,
                         [(m.label, m.freq) for m in self.plot.markers])
         png = str(Path(path).with_suffix(".png"))

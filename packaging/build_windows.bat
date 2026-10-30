@@ -15,7 +15,7 @@ if not exist build-venv (
 call build-venv\Scripts\activate.bat || goto :error
 
 python -m pip install --upgrade pip || goto :error
-python -m pip install . pyinstaller || goto :error
+python -m pip install .[pluto] pyinstaller || goto :error
 
 pyinstaller --noconfirm --clean packaging\pnscope.spec || goto :error
 

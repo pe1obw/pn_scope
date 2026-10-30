@@ -9,9 +9,11 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
+from pyqtgraph.graphicsItems.ViewBox.ViewBoxMenu import ViewBoxMenu
+
 from .. import analysis as A
 from .. import style
-from ..units import format_freq
+from ..units import format_freq, parse_si
 
 
 class FreqAxis(pg.AxisItem):
@@ -21,6 +23,34 @@ class FreqAxis(pg.AxisItem):
             r = round(v)
             out.append(format_freq(10 ** r, 3) if abs(v - r) < 1e-6 else "")
         return out
+
+
+class FreqViewBoxMenu(ViewBoxMenu):
+    """pyqtgraph's context menu, but the X range fields show and accept frequencies
+    ('100 Hz', '10M') instead of the log10 view coordinates of the log axis."""
+
+    def __init__(self, view):
+        super().__init__(view)
+        for w in (self.ctrl[0].minText, self.ctrl[0].maxText):
+            w.setToolTip("Frequency, e.g. 100, 1k, 10 MHz")
+
+    def updateState(self):
+        super().updateState()
+        x0, x1 = self.view().getState(copy=False)["targetRange"][0]
+        self.ctrl[0].minText.setText(format_freq(10 ** x0, 4))
+        self.ctrl[0].maxText.setText(format_freq(10 ** x1, 4))
+
+    def xRangeTextChanged(self):
+        try:
+            f0 = parse_si(self.ctrl[0].minText.text())
+            f1 = parse_si(self.ctrl[0].maxText.text())
+            if not 0 < f0 < f1:
+                raise ValueError
+        except ValueError:
+            self.updateState()  # put the current range back
+            return
+        self.ctrl[0].manualRadio.setChecked(True)
+        self.view().setXRange(math.log10(f0), math.log10(f1), padding=0)
 
 
 class Marker:
@@ -59,6 +89,13 @@ class PNPlot(pg.PlotWidget):
         super().__init__(parent, background=style.SURFACE, axisItems={"bottom": FreqAxis("bottom")})
         pi = self.getPlotItem()
         pi.setLogMode(x=True, y=False)
+        vb = pi.getViewBox()
+        try:
+            vb.sigStateChanged.disconnect(vb.menu.viewStateChanged)
+        except (TypeError, RuntimeError):
+            pass
+        vb.menu.setParent(None)
+        vb.menu = FreqViewBoxMenu(vb)
         pi.showGrid(x=True, y=True, alpha=0.35)
         for ax in ("left", "bottom"):
             a = pi.getAxis(ax)
@@ -89,7 +126,8 @@ class PNPlot(pg.PlotWidget):
 
     # --- curves ---------------------------------------------------------------------
     def set_traces(self, series, show_raw=False):
-        """series: list of (key, name, color, Processed, is_floor, legend_label)."""
+        """series: list of (key, name, color, Processed, kind, legend_label);
+        kind: 'normal', 'floor' (reference, grey dashed) or 'background' (dotted)."""
         for disp, raw in self.curves.values():
             self.removeItem(disp)
             if raw is not None:
@@ -97,10 +135,12 @@ class PNPlot(pg.PlotWidget):
         self.curves.clear()
         self.legend.clear()
         self._series = []
-        for key, name, color, p, is_floor, legend in series:
+        for key, name, color, p, kind, legend in series:
             ok = np.isfinite(p.display)
+            is_floor = kind == "floor"
             col = style.FLOOR if is_floor else color
-            pen = pg.mkPen(col, width=1.5 if is_floor else 2, style=Qt.DashLine if is_floor else Qt.SolidLine)
+            pen = pg.mkPen(col, width=2 if kind == "normal" else 1.5,
+                           style={"floor": Qt.DashLine, "background": Qt.DotLine}.get(kind, Qt.SolidLine))
             raw_item = None
             if show_raw or p.measured is not None:
                 c = QColor(col)

@@ -7,6 +7,8 @@ Supported analyzers:
 
 - Siglent SSA3000X series (tested: SSA3075X-R, firmware 3.2.2.6), over LAN
 - tinySA Ultra (tested: ZS-406, firmware v1.4-109), over USB; see [tinySA notes](#tinysa-notes)
+- ADALM-Pluto / Pluto+ SDR (AD9361; tested: Pluto+ "FISH Ball" Z7020, fw 80403), over LAN/USB via
+  libiio; see [PlutoSDR notes](#plutosdr-notes)
 - A built-in simulated analyzer, to try the program without hardware
 
 Adding another analyzer (e.g. Rigol RSA3000/5000) is a small driver class, see
@@ -64,6 +66,13 @@ measured: measure a clean generator the same way and use it as the reference tra
 - Smoothing (moving average on the log axis, display only).
 - Spur detection (points more than *threshold* above the local median), listed with level in dBc;
   optional removal (replaced by the local median) before integration.
+- **Background measurement** (optional: enable it under Measure → Advanced, then use the
+  *Background (DUT off)…* button): select a measurement,
+  switch the DUT's RF off and repeat the same segments without carrier. The background trace is
+  drawn dotted in the measurement's colour (levels in dBc relative to its carrier), and the spur
+  table marks which spurs are also there without carrier ("external": the surroundings, e.g. clock
+  harmonics picked up by the cable, or the analyzer) and which come from the DUT. It also shows
+  the analyzer's additive noise floor, separately from its phase-noise floor (the "Ref." trace).
 - Reference subtraction: mark a trace as **Ref.** (analyzer floor) and subtract it from the others.
   Points within the margin of the floor count as zero noise, so results are a lower bound there.
 - Integrated phase noise over a range (type it, use a preset, or drag the band on the plot):
@@ -230,6 +239,36 @@ sweep range and RBW (`auto`) are restored afterwards.
   averaged in power (no error) or in dB (noise reads ~2 dB low) is still open; an absolute
   check against the Siglent with a common noise-like signal would settle it. Until then treat
   tinySA noise readings as ±2 dB.
+
+## PlutoSDR notes
+
+Select **PlutoSDR (AD9361)** and enter the IIO URI (`ip:192.168.2.1`, `usb:1.5.5`, or just the IP).
+Needs the libiio system library (Linux: `apt install libiio0`, Windows: ADI's libiio installer) and
+`pip install -e .[pluto]` (pylibiio 0.25 for libiio 0.2x).
+
+How it works: each "sweep" is an IQ capture and a Welch spectrum (Blackman-Harris window sized so
+its 3 dB width is the RBW; noise bandwidth 1.055 × RBW). Narrow spans put the carrier at +Fs/4,
+away from the receiver's DC correction and LO leakage. The receiver gain is set automatically per
+segment (manual gain mode) and every capture is normalised to its own carrier power, so gain
+and sample-rate changes between segments cancel. The full-span **Find** steps the LO (70 MHz – 6 GHz
+in ~2 s). The receiver settings (LO, sample rate, bandwidth, gain mode) are restored afterwards.
+
+- Fast: 100 Hz – 10 MHz with 4 averages takes ~20 s. RBW down to ~1 Hz.
+- Close in, its LO phase noise is much lower than the Siglent's: on an SSG3032X at 100 MHz a
+  Pluto+ read −99 dBc/Hz at 100 Hz and −109 dBc/Hz at 1 kHz, matching the generator's datasheet.
+- Further out it is limited by **additive noise**, not phase noise. For inputs above about
+  −45 dBm the AD9361's noise floor is a fixed ~−128 dBFS/Hz (independent of gain and sample
+  rate), so with the carrier at about −4.4 dBFS the lowest measurable L(f) is about
+  −120…−123 dBc/Hz. (Weaker inputs need more gain, and the floor rises.) Measure a
+  **Background** (it uses the same gain per segment as the measurement), mark it **Ref.** and
+  subtract it to gain a few dB near the floor.
+- Levels are relative: the carrier "dBm" shown is dBFS minus the receiver gain, not calibrated.
+- No input filtering: strong signals anywhere within the sampled bandwidth (up to ±30 MHz) reach
+  the ADC. Around 100 MHz, FM broadcast stations show up as spurs and raised noise on one
+  sideband; use the other sideband (Display → Sideband) or a band-pass filter. The automatic
+  gain looks at the strongest signal in the band, so such signals also cost dynamic range.
+- Input level: anything from about −45 dBm up to the input limit gives the same floor relative
+  to the carrier; below −45 dBm it gets worse.
 
 ## Limitations / ideas
 

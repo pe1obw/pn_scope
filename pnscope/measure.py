@@ -13,6 +13,28 @@ from .model import Measurement, Segment
 from .plan import PlanSettings, SegmentPlan, make_plan
 
 
+def states_from(m: Measurement) -> list[dict]:
+    return [s.analyzer_state or {} for s in m.segments]
+
+
+def plan_from(m: Measurement) -> list[SegmentPlan]:
+    """The segment plan of an existing measurement (to repeat it, e.g. as background)."""
+    return [SegmentPlan(s.f_lo, s.f_hi, s.span, s.rbw, s.vbw, s.averages or 1) for s in m.segments]
+
+
+def background_settings(m: Measurement, auto_ref_level=True, ref_margin=5.0, restore=True):
+    """MeasureSettings for a background run belonging to measurement m."""
+    meas = m.settings.get("measure", {})
+    return MeasureSettings(
+        name=f"{m.name} (background)", carrier_freq=m.carrier_freq,
+        carrier_power=m.carrier_power, background=True, track_carrier=False,
+        auto_ref_level=meas.get("auto_ref_level", auto_ref_level),
+        ref_margin=meas.get("ref_margin", ref_margin), restore=restore,
+        notes=f"DUT RF off. Background for '{m.name}' ({m.timestamp}).",
+        background_for={"name": m.name, "timestamp": m.timestamp,
+                        "carrier_freq": m.carrier_freq})
+
+
 @dataclass
 class MeasureSettings:
     name: str = "measurement"
@@ -23,6 +45,12 @@ class MeasureSettings:
     ref_margin: float = 5.0
     restore: bool = True               # put the analyzer back as it was afterwards
     notes: str = ""
+    # Background measurement: the DUT's RF is off. No carrier search; carrier_freq and
+    # carrier_power are those of the measurement it belongs to, so the result is in dBc
+    # relative to that carrier. background_for identifies that measurement.
+    background: bool = False
+    carrier_power: float | None = None
+    background_for: dict | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -55,14 +83,22 @@ class PhaseNoiseRun:
     def __init__(self, analyzer: SpectrumAnalyzer, plan_settings: PlanSettings,
                  settings: MeasureSettings, progress: ProgressFn | None = None,
                  on_segment: Callable[[Measurement], None] | None = None,
-                 cancel: threading.Event | None = None):
+                 cancel: threading.Event | None = None,
+                 plan: list[SegmentPlan] | None = None, segment_states: list[dict] | None = None):
+        """plan: explicit segments (e.g. copied from an earlier measurement); default:
+        derived from plan_settings. segment_states: driver settings per segment to re-apply
+        (background runs: same gain/attenuation as the measurement)."""
+        self.segment_states = segment_states
         self.a = analyzer
         self.ps = plan_settings
         self.ms = settings
         self.progress = progress or (lambda msg, frac: None)
         self.on_segment = on_segment or (lambda m: None)
         self.cancel = cancel or threading.Event()
-        self.plan, self.warnings = make_plan(plan_settings, analyzer.rbw_steps)
+        if plan is not None:
+            self.plan, self.warnings = list(plan), []
+        else:
+            self.plan, self.warnings = make_plan(plan_settings, analyzer.rbw_steps)
 
     def _check(self):
         if self.cancel.is_set():
@@ -127,24 +163,36 @@ class PhaseNoiseRun:
         n_seg = len(self.plan)
         try:
             a.setup_noise_mode()
-            fc = ms.carrier_freq if ms.carrier_freq else a.get_center()
-            self.progress(f"Searching carrier near {fc / 1e6:.6f} MHz", 0.0)
-            fc, _ = self.locate(fc, self.locate_steps(ms.search_span))
-            pc = self.measure_carrier_power(fc)
-            if ms.auto_ref_level:
-                ref = float(np.ceil(pc + ms.ref_margin))
-                self.progress(f"Reference level {ref:.0f} dBm", 0.02)
-                a.set_ref_level(ref)
+            if ms.background:
+                if ms.carrier_freq is None or ms.carrier_power is None:
+                    raise ValueError("a background measurement needs the carrier frequency and power")
+                a.set_carrier_expected(False)
+                fc, pc = ms.carrier_freq, ms.carrier_power
+                if ms.auto_ref_level and a.has_ref_level:  # same as the measurement it belongs to
+                    a.set_ref_level(float(np.ceil(pc + ms.ref_margin)))
+                self.progress(f"Background at {fc:.1f} Hz (carrier off), levels relative to "
+                              f"{pc:.2f} dBm", 0.04)
+            else:
+                fc = ms.carrier_freq if ms.carrier_freq else a.get_center()
+                self.progress(f"Searching carrier near {fc / 1e6:.6f} MHz", 0.0)
+                fc, _ = self.locate(fc, self.locate_steps(ms.search_span))
                 pc = self.measure_carrier_power(fc)
-            elif pc > a.get_ref_level():
-                self.warnings.append("Carrier is above the reference level: risk of overload.")
-            self.progress(f"Carrier {fc:.1f} Hz, {pc:.2f} dBm", 0.04)
+                if ms.auto_ref_level and a.has_ref_level:
+                    ref = float(np.ceil(pc + ms.ref_margin))
+                    self.progress(f"Reference level {ref:.0f} dBm", 0.02)
+                    a.set_ref_level(ref)
+                    pc = self.measure_carrier_power(fc)
+                elif a.has_ref_level and pc > a.get_ref_level():
+                    self.warnings.append("Carrier is above the reference level: risk of overload.")
+                self.progress(f"Carrier {fc:.1f} Hz, {pc:.2f} dBm", 0.04)
 
             m = Measurement(name=ms.name, carrier_freq=fc, carrier_power=pc,
                             timestamp=datetime.datetime.now().isoformat(timespec="seconds"),
                             instrument=idn, notes=ms.notes,
                             settings={"plan": self.ps.to_dict(), "measure": ms.to_dict(),
                                       "warnings": list(self.warnings)})
+            if ms.background:
+                m.settings["background_for"] = ms.background_for or {}
             # rough cost of each segment for the progress bar
             weights = []
             for sp in self.plan:
@@ -152,9 +200,11 @@ class PhaseNoiseRun:
             total, done = sum(weights), 0.0
             for k, sp in enumerate(self.plan):
                 self._check()
-                if ms.track_carrier and k > 0:
+                if ms.track_carrier and k > 0 and not ms.background:
                     fc, _ = self.locate(fc, [(20e3, self._rbw_for(20e3)), (2e3, self._rbw_for(2e3))])
                 st = a.configure(fc, sp.span, sp.rbw, sp.vbw)
+                if self.segment_states and k < len(self.segment_states) and self.segment_states[k]:
+                    a.apply_segment_state(self.segment_states[k])
                 self.progress(f"Segment {k + 1}/{n_seg}: span {sp.span:g} Hz, RBW {sp.rbw:g} Hz, "
                               f"{sp.averages}× {st:.2f} s", 0.05 + 0.95 * done / total)
                 t = self._sweep_avg(sp.averages)
@@ -162,7 +212,8 @@ class PhaseNoiseRun:
                     span=sp.span, rbw=sp.rbw, vbw=sp.vbw, averages=sp.averages,
                     f_lo=sp.f_lo, f_hi=sp.f_hi,
                     offsets=-sp.span / 2 + sp.span * np.arange(len(t)) / (len(t) - 1),
-                    power=t, carrier_freq=fc, sweep_time=st, enbw=a.enbw_ratio(sp.rbw)))
+                    power=t, carrier_freq=fc, sweep_time=st, enbw=a.enbw_ratio(sp.rbw),
+                    analyzer_state=a.segment_state() or None))
                 done += weights[k]
                 self.on_segment(m)
             errs = a.errors()
@@ -171,6 +222,7 @@ class PhaseNoiseRun:
             self.progress("Done", 1.0)
             return m
         finally:
+            a.set_carrier_expected(True)
             if state is not None:
                 try:
                     a.restore_state(state)
