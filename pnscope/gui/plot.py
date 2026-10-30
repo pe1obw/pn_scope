@@ -59,10 +59,10 @@ class PNPlot(pg.PlotWidget):
         super().__init__(parent, background=style.SURFACE, axisItems={"bottom": FreqAxis("bottom")})
         pi = self.getPlotItem()
         pi.setLogMode(x=True, y=False)
-        pi.showGrid(x=True, y=True, alpha=0.25)
+        pi.showGrid(x=True, y=True, alpha=0.35)
         for ax in ("left", "bottom"):
             a = pi.getAxis(ax)
-            a.setPen(pg.mkPen(style.GRID))
+            a.setPen(pg.mkPen(style.AXIS))  # grid lines are drawn in the axis colour
             a.setTextPen(pg.mkPen(style.TEXT_2))
         pi.setLabel("bottom", "Offset frequency")
         pi.setLabel("left", "L(f)", units=None)
