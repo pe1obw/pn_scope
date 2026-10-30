@@ -1,93 +1,204 @@
-# Pn Scope
+# PNScope
 
+A utility for spectrum analyzers to make phase noise plots and do analysis on them —
+for analyzers that have no phase-noise option.
 
+Supported analyzers:
 
-## Getting started
+- Siglent SSA3000X series (tested: SSA3075X-R, firmware 3.2.2.6)
+- A built-in simulated analyzer, to try the program without hardware
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Adding another analyzer (e.g. Rigol RSA3000/5000) is a small driver class, see
+[Writing a driver](#writing-a-driver).
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Install and run
 
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```sh
+python3 -m venv venv
+venv/bin/pip install -e .          # numpy, PySide6, pyqtgraph, matplotlib
+venv/bin/pnscope [files…]          # or: venv/bin/python -m pnscope
 ```
-cd existing_repo
-git remote add origin https://gitlab.pe1obw.com/Werner/pn_scope.git
-git branch -M main
-git push -uf origin main
+
+Run the tests with `venv/bin/pip install pytest && venv/bin/python -m pytest`.
+
+## Functionality
+
+The tool makes a plot with logarithmic frequency scale, showing the phase noise L(f) in dBc/Hz.
+
+**Measuring** (left panel)
+
+- Carrier frequency: type it (`1.5805 GHz`, `1580.42M`, …), take the analyzer's centre
+  frequency (**Get**), or search the full span for the strongest signal (**Find**). Leave it empty
+  to use the analyzer's centre. The carrier is then located precisely within the *search span*,
+  and the measurement refuses to start if no clear carrier is there.
+- Start / stop offset (e.g. 100 Hz … 1 MHz, or 30 Hz … 10 MHz). The range is split into one
+  segment per decade; the table shows span, RBW and averages of each.
+- Averages per segment (power averaging of sweeps).
+- Advanced: re-centre on the carrier before each segment (tracks slow drift), set the reference
+  level to carrier + 5 dB (best dynamic range), restore all analyzer settings afterwards,
+  span/RBW ratio, minimum offset in RBWs, VBW ratio.
+- The curve builds up live, segment by segment. **Stop** ends after the current sweep and keeps
+  the finished segments.
+
+Plots can only be made for CW signals. The analyzer's own phase noise limits what can be
+measured: measure a clean generator the same way and use it as the reference trace.
+
+**Analysing** (right panel and results tabs)
+
+- Several traces overlaid; show/hide, rename (double-click), save, remove.
+- Sideband: average of both sidebands, upper or lower only.
+- Smoothing (moving average on the log axis, display only).
+- Spur detection (points more than *threshold* above the local median), listed with level in dBc;
+  optional removal (replaced by the local median) before integration.
+- Reference subtraction: mark a trace as **Ref.** (analyzer floor) and subtract it from the others.
+  Points within the margin of the floor count as zero noise, so results are a lower bound there.
+- Integrated phase noise over a range (type it, use a preset, or drag the band on the plot):
+  rms phase in degrees and mrad, integrated dBc, rms jitter, residual FM.
+- Spot noise table at chosen offsets (default each decade).
+- Markers: double-click the plot or **Add**, drag them, **To peak**; values for every trace, or Δ to M1.
+  Double-click a spur to put a marker on it.
+- Info tab: carrier, instrument, notes, segment settings, analyzer warnings.
+
+**Export** (File menu)
+
+- Plot as PNG, SVG or PDF (title, legend with integrated results, markers, integration band).
+- CSV of the selected trace (both sidebands, average, processed curve, RBW per point).
+- Markdown report with all tables and the plot.
+- Copy the plot to the clipboard.
+
+Measurements are saved as `.pnscope` files (JSON, raw averaged traces of every segment, so all
+analysis can be redone later). The `<label>_meta.json` + `_segN.csv` output of the earlier
+scripts (`example/`) opens directly.
+
+## Background
+
+Using the spectrum analyzer's spectrum analysis mode is the most typical, direct and widely
+used method to measure phase noise.
+
+The procedure is:
+
+- Measure the carrier power (Pc) in dBm.
+- Set a delta marker to a specific frequency offset from the carrier, i.e. a point in the phase noise sideband.
+- Measure the noise power (Pn) at that offset, using the noise marker function to normalize the noise measured by the RBW filter to 1 Hz bandwidth.
+- Repeat the process at different offsets from the carrier.
+
+What doesn't help, is that in some Siglent firmware versions the delta noise marker function is broken.
+
+Measuring phase noise with very small offsets from the carrier requires a very narrow resolution
+bandwidth, to avoid measuring the carrier power instead.
+
+### What PNScope does instead of the noise marker
+
+1. Locate the carrier by zooming in (parabolic interpolation on the peak), and measure Pc with
+   a wide RBW so the reading is not affected by the trace-point spacing.
+2. For each offset decade, sweep a span of ±(top of the decade) around the carrier with
+   RBW ≈ span/600 (≈ one RBW per trace point), RMS (average) detector, power averaging,
+   VBW = 3 × RBW, and average N sweeps in the power domain.
+3. Keep from each segment only offsets ≥ 10 × RBW (outside the carrier skirt), and stitch:
+
+   `L(f) = P(f) − Pc − 10·log10(1.065 · RBW)`   [dBc/Hz]
+
+   1.065 is the noise bandwidth of a Gaussian RBW filter relative to its 3 dB bandwidth. With an
+   RMS detector no log-averaging correction (2.5 dB) is needed.
+4. Integration is double-sideband: φ_rms = √(2 ∫ L(f) df), jitter = φ_rms / (2π·fc),
+   residual FM = √(2 ∫ L(f)·f² df).
+
+Spur levels are read as P − Pc at the spur's peak (they are not per Hz).
+
+## Code layout
+
+```text
+pnscope/
+  analyzers/base.py      SpectrumAnalyzer: the abstract interface the measurement uses
+  analyzers/scpi.py      SocketTransport + ScpiSpectrumAnalyzer (command table driven)
+  analyzers/siglent.py   Siglent SSA3000X driver
+  analyzers/simulated.py software analyzer (synthetic carrier, noise and spurs)
+  analyzers/registry.py  @register decorator; the GUI lists all registered drivers
+  plan.py                offset range -> segments (span, RBW, averages)
+  measure.py             PhaseNoiseRun: carrier search, segments, restore; find_carrier()
+  model.py               Measurement/Segment, .pnscope files, legacy import
+  analysis.py            stitching, sidebands, spurs, smoothing, floor subtraction,
+                         integration, spot noise
+  export.py              matplotlib figure, CSV, Markdown report
+  gui/                   PySide6 + pyqtgraph user interface
 ```
 
-## Integrate with your tools
+The measurement and analysis code has no GUI dependency, so it can be scripted:
 
-* [Set up project integrations](https://gitlab.pe1obw.com/Werner/pn_scope/-/settings/integrations)
+```python
+from pnscope.analyzers import create
+from pnscope.measure import PhaseNoiseRun, MeasureSettings
+from pnscope.plan import PlanSettings
+from pnscope import analysis as A
 
-## Collaborate with your team
+with create("Siglent SSA3000X", "192.168.10.108") as sa:
+    m = PhaseNoiseRun(sa, PlanSettings(start=100, stop=10e6),
+                      MeasureSettings(name="dut", carrier_freq=1e9)).run()
+m.save("dut.pnscope")
+c = A.stitch(m)
+print(A.integrate(c.f, c.avg, 1e3, 1e6, m.carrier_freq).phase_deg)
+```
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Writing a driver
 
-## Test and Deploy
+The measurement needs only what `SpectrumAnalyzer` in `analyzers/base.py` declares: set
+centre/span/RBW/VBW, single sweep with an RMS detector and power averaging, read the trace,
+reference level, and save/restore the instrument state.
 
-Use the built-in continuous integration in GitLab.
+For a SCPI instrument reachable over LAN, subclass `ScpiSpectrumAnalyzer` and override the
+command table where the dialect differs. Create `pnscope/analyzers/<vendor>.py`:
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```python
+from .base import steps_125
+from .registry import register
+from .scpi import ScpiSpectrumAnalyzer
 
-***
 
-# Editing this README
+@register
+class RigolRSA(ScpiSpectrumAnalyzer):
+    model_name = "Rigol RSA3000/5000"     # shown in the GUI
+    needs_host = True
+    rbw_steps = steps_125(1, 10e6)        # RBW values the instrument accepts
+    min_freq, max_freq = 9e3, 3.2e9
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+    # Only the entries that differ from the base table (scpi.py). The values below are an
+    # UNTESTED sketch — check every command against the programming guide.
+    CMD = dict(ScpiSpectrumAnalyzer.CMD,
+               detector_rms=":SENS:DET:TRAC RMS",
+               average_power=":SENS:AVER:TYPE RMS",
+               trace_write=":TRAC1:MODE WRIT",
+               rbw=":SENS:BAND:RES {v:g}",
+               vbw=":SENS:BAND:VID {v:g}",
+               ref_level=":DISP:WIND:TRAC:Y:SCAL:RLEV {v:.1f}",
+               **{"ref_level?": ":DISP:WIND:TRAC:Y:SCAL:RLEV?",
+                  "trace?": ":TRAC:DATA? TRACE1"})
 
-## Suggestions for a good README
+    # queried with '?' before the measurement and written back afterwards, in this order
+    STATE = [":SENS:FREQ:CENT", ":SENS:FREQ:SPAN", ":DISP:WIND:TRAC:Y:SCAL:RLEV",
+             ":SENS:BAND:RES", ":SENS:BAND:RES:AUTO", ":SENS:BAND:VID", ":SENS:BAND:VID:AUTO",
+             ":SENS:DET:TRAC", ":SENS:AVER:TYPE", ":INIT:CONT"]
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Then add the module to the import line in `analyzers/__init__.py`. If the trace comes back in
+another format (binary block, different separator) override `parse_trace()`; if the instrument
+needs a different sweep/wait sequence, override `sweep()`. Instruments without SCPI over a
+socket (USB-TMC, VISA, serial) can subclass `SpectrumAnalyzer` directly, or replace
+`SocketTransport` with another class offering `open/close/write/readline/query`.
 
-## Name
-Choose a self-explaining name for your project.
+Points to check when bringing up a new analyzer:
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+- The detector must average power (RMS/"average" with power scale), not log/video average,
+  otherwise noise reads ~2.5 dB low.
+- Is the RBW filter Gaussian (noise bandwidth 1.065 × RBW)? If not, adjust `ENBW_GAUSSIAN`.
+- Number of trace points: a span/RBW ratio of ~600 suits 751 points; with more points a
+  higher ratio is possible (Advanced → Span / RBW).
+- On disconnect the driver sends the `local` command (Siglent: `:SYST:LOC`) so the front panel
+  works again; set it to the instrument's go-to-local command, or `None` if there is none.
+- Compare a clean generator against the simulated / known results, and check that
+  `restore_state` leaves the instrument as it was (`save_state()` before == after).
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+## Limitations / ideas
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+- Only CW signals. Future: signal tracking for unstable signals (now: re-centre per segment).
+- The analyzer's own phase noise and LO spurs set the floor; readings near it are upper bounds.
+- Not yet: limit lines/masks, cross-correlation, AM noise.
