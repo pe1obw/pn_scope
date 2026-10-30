@@ -11,6 +11,8 @@ Supported analyzers:
 Adding another analyzer (e.g. Rigol RSA3000/5000) is a small driver class, see
 [Writing a driver](#writing-a-driver).
 
+![Application screenshot](images/linux_screenshot.png)
+
 ## Install and run
 
 ```sh
@@ -213,3 +215,5 @@ Points to check when bringing up a new analyzer:
 - Only CW signals. Future: signal tracking for unstable signals (now: re-centre per segment).
 - The analyzer's own phase noise and LO spurs set the floor; readings near it are upper bounds.
 - Not yet: limit lines/masks, cross-correlation, AM noise.
+
+![Plot](images/100MHz_plot.png)
