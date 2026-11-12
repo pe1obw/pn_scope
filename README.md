@@ -9,6 +9,7 @@ Supported analyzers:
 - tinySA Ultra (tested: ZS-406, firmware v1.4-109), over USB; see [tinySA notes](#tinysa-notes)
 - ADALM-Pluto / Pluto+ SDR (AD9361; tested: Pluto+ "FISH Ball" Z7020, fw 80403), over LAN/USB via
   libiio; see [PlutoSDR notes](#plutosdr-notes)
+- Generic IIO SDR: any libiio receiver with a fixed LO and sample rate; see [Generic IIO notes](#generic-iio-notes)
 - A built-in simulated analyzer, to try the program without hardware
 
 Adding another analyzer (e.g. Rigol RSA3000/5000) is a small driver class, see
@@ -135,6 +136,8 @@ pnscope/
   analyzers/base.py      SpectrumAnalyzer: the abstract interface the measurement uses
   analyzers/scpi.py      SocketTransport + ScpiSpectrumAnalyzer (command table driven)
   analyzers/siglent.py   Siglent SSA3000X driver
+  analyzers/pluto.py     PlutoSDR (AD936x) driver, FFT 'sweeps' via libiio
+  analyzers/iio_generic.py  generic fixed-LO IIO receiver: NCO + decimation + FFT
   analyzers/simulated.py software analyzer (synthetic carrier, noise and spurs)
   analyzers/registry.py  @register decorator; the GUI lists all registered drivers
   plan.py                offset range -> segments (span, RBW, averages)
@@ -269,6 +272,46 @@ in ~2 s). The receiver settings (LO, sample rate, bandwidth, gain mode) are rest
   gain looks at the strongest signal in the band, so such signals also cost dynamic range.
 - Input level: anything from about −45 dBm up to the input limit gives the same floor relative
   to the carrier; below −45 dBm it gets worse.
+
+## Generic IIO notes
+
+Select **Generic IIO SDR** for an IIO receiver the program has no specific driver for. It changes
+nothing on the device: no tuning, gain or sample rate. It captures IQ samples at whatever LO the
+device (or another tool) has set, shifts the carrier to 0 Hz numerically, filters and decimates to
+suit the span, and uses the same Welch spectrum as the Pluto driver. Needs libiio/pylibiio as
+for the Pluto.
+
+The address is the IIO URI (or IP), optionally followed by space-separated options:
+
+```text
+ip:192.168.2.1 ch=0 fs=61.44M lo=1575.42M
+```
+
+| Option | Meaning | Default |
+|---|---|---|
+| `dev=` | buffer device (name, label or `iio:deviceN`) | first device with buffered input channels |
+| `ch=` | complex channel (I/Q pair) on that device, from 0 | 0 |
+| `fs=` | sample rate of the buffered samples | the channel's `sampling_frequency` |
+| `lo=` | LO frequency, or `DEVICE/CHANNEL` to read its `frequency` attribute (e.g. `<chip>-phy1/altvoltage0`) | a unique `RX_LO`/`TRX_LO` channel, else 0 (frequencies relative to the LO) |
+| `contig=` | largest gap-free capture in MiB; `0` = no limit (sets the narrowest RBW) | 16 |
+| `maxcap=` | samples per sweep, all captures together | 2^25 |
+
+Numbers accept k/M/G suffixes.
+
+- The carrier must lie within ±0.45 Fs of the LO. Keep it well away from the LO: offsets beyond
+  |carrier − LO| include the receiver's DC offset correction and LO leakage (the driver warns).
+- Give `fs=` when the FPGA decimates or the attribute is wrong: a wrong sample rate scales all
+  offsets. Check with **Find**: the carrier must appear at its real frequency.
+- Levels are dBFS (shown as dBm); the gain is not touched, so set it so the carrier is around
+  −10…−3 dBFS. The driver warns on ADC clipping.
+- Gap-free captures: the ADI AXI DMA splits a buffer into 16 MiB transfers (24-bit length
+  register) and can lose samples between them; a spectrum across such a gap has a phase jump
+  and reads far too much noise close to the carrier. So every capture is at most `contig=` MiB,
+  and a sweep averages several captures. If your HDL has a longer DMA length, raise `contig=`.
+- The narrowest RBW follows from that: 16 MiB = 4.19 M samples = 68 ms at 61.44 MS/s gives
+  ~30 Hz. Narrower plan segments use ~30 Hz, with the noise bandwidth corrected; offsets
+  below ~10 × that (300 Hz) may contain carrier skirt.
+- 100 Hz – 10 MHz with 8 averages takes ~21 s over Gigabit Ethernet (transfer ~110 MB/s).
 
 ## Limitations / ideas
 

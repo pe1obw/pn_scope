@@ -61,6 +61,20 @@ def _smooth_len(n):
     return best
 
 
+def welch_psd(x, nfft):
+    """Welch average (half-overlapping Blackman-Harris segments) of amplitude-normalised
+    spectra, fftshifted: a CW at a bin centre reads its power."""
+    w = _blackman_harris(nfft).astype(np.float32)
+    step = nfft // 2
+    acc, n = None, 0
+    for s in range(0, len(x) - nfft + 1, step):
+        X = np.fft.fft(x[s:s + nfft] * w)
+        p = (X.real ** 2 + X.imag ** 2)
+        acc = p if acc is None else acc + p
+        n += 1
+    return np.fft.fftshift(acc / n) / np.sum(w) ** 2
+
+
 @register
 class PlutoSDR(SpectrumAnalyzer):
     model_name = "PlutoSDR (AD9361)"
@@ -244,16 +258,7 @@ class PlutoSDR(SpectrumAnalyzer):
 
     # --- spectra --------------------------------------------------------------------------------
     def _psd(self, x, nfft):
-        """Welch average of amplitude-normalised spectra: a CW at a bin centre reads its power."""
-        w = _blackman_harris(nfft).astype(np.float32)
-        step = nfft // 2
-        acc, n = None, 0
-        for s in range(0, len(x) - nfft + 1, step):
-            X = np.fft.fft(x[s:s + nfft] * w)
-            p = (X.real ** 2 + X.imag ** 2)
-            acc = p if acc is None else acc + p
-            n += 1
-        return np.fft.fftshift(acc / n) / np.sum(w) ** 2
+        return welch_psd(x, nfft)
 
     def sweep(self, cancel: threading.Event | None = None):
         if cancel is not None and cancel.is_set():
